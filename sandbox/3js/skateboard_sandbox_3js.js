@@ -39,6 +39,7 @@ const state = {
   slopeDeg: 0,
   boardAccelFwd: 0,
   isToeside: false,
+  isGoofy: true,
 };
 
 const playback = {
@@ -416,7 +417,7 @@ scene.add(flowArrowhead);
 
 function buildFlowPath(leanDeg) {
   // leanDeg: raw board lean in degrees
-  // Curvature: negative = curve left (heelside for goofy), positive = curve right (toeside)
+  // Positive lean = left edge down = physical turn left (stance-independent)
   const curvature = Math.max(-1, Math.min(1, leanDeg / dims.maxLeanDeg)) * 0.8;
   const numPts = 30;
   const pathLen = 1.2;
@@ -424,7 +425,6 @@ function buildFlowPath(leanDeg) {
   for (let i = 0; i <= numPts; i++) {
     const t = i / numPts;
     const y = 0.5 + t * pathLen; // start in front of board, go forward
-    // x curves based on edge: positive edge = toeside = curve in -x direction (rider's left for goofy)
     const x = -curvature * t * t * pathLen;
     pts.push(new THREE.Vector3(x, y, 0.01));
   }
@@ -496,15 +496,18 @@ function getBodyPoints() {
 
   const carveRot = boardRot.clone();
 
-  const leftFootLocal = new THREE.Vector3(0, -0.25, 0.02);
-  const rightFootLocal = new THREE.Vector3(0, 0.25, 0.02);
+  // Stance multiplier: goofy faces -X, regular faces +X
+  const stanceMul = state.isGoofy ? 1 : -1;
+
+  const leftFootLocal = new THREE.Vector3(0, -0.25 * stanceMul, 0.02);
+  const rightFootLocal = new THREE.Vector3(0, 0.25 * stanceMul, 0.02);
 
   const kneeAngleDeg = 170 - (squatPct / 100) * 100;
   const kneeOffset = 0.12 + (squatPct / 100) * 0.08;
   const kneeHeightLocal = dims.shinLength * Math.cos(degToRad(90 - kneeAngleDeg / 2));
 
-  const leftKneeLocal = new THREE.Vector3(hipShift - kneeOffset, -0.25, kneeHeightLocal);
-  const rightKneeLocal = new THREE.Vector3(hipShift - kneeOffset, 0.25, kneeHeightLocal);
+  const leftKneeLocal = new THREE.Vector3(hipShift - kneeOffset * stanceMul, -0.25 * stanceMul, kneeHeightLocal);
+  const rightKneeLocal = new THREE.Vector3(hipShift - kneeOffset * stanceMul, 0.25 * stanceMul, kneeHeightLocal);
   const hipLocal = new THREE.Vector3(hipShift, 0, hipHeight);
 
   const leftFoot = leftFootLocal.clone().applyMatrix3(carveRot);
@@ -538,11 +541,11 @@ function getBodyPoints() {
 
   const shoulderVec = new THREE.Vector3(0, dims.shoulderSpread, 0).applyMatrix3(torsoRotMat);
   const shoulderCenter = hip.clone().add(torsoVecRot.clone().multiplyScalar(0.85));
-  const leftShoulder = shoulderCenter.clone().sub(shoulderVec);
-  const rightShoulder = shoulderCenter.clone().add(shoulderVec);
+  const leftShoulder = shoulderCenter.clone().sub(shoulderVec.clone().multiplyScalar(stanceMul));
+  const rightShoulder = shoulderCenter.clone().add(shoulderVec.clone().multiplyScalar(stanceMul));
 
   const chest = hip.clone().add(torsoVecRot.clone().multiplyScalar(0.6));
-  const chestNormal = new THREE.Vector3(-1, 0, 0).applyMatrix3(torsoRotMat).multiplyScalar(0.3);
+  const chestNormal = new THREE.Vector3(-stanceMul, 0, 0).applyMatrix3(torsoRotMat).multiplyScalar(0.3);
 
   // === PROCEDURAL ARM CALCULATIONS ===
   const squat01 = squatPct / 100;
@@ -555,19 +558,19 @@ function getBodyPoints() {
 
   // Helper to calculate arm points for one side
   function calcArmPoints(shoulder, isLeft) {
-    const side = isLeft ? -1 : 1;
-    
+    const side = (isLeft ? -1 : 1) * stanceMul;
+
     // Base elbow direction in torso-local space (hanging down and slightly out/forward)
     let elbowDir = new THREE.Vector3(
-      -0.1 - squat01 * 0.15,              // X: forward (more when squatting)
-      side * (0.15 + squat01 * 0.2),      // Y: outward (more when squatting)
-      -0.85 + squat01 * 0.5               // Z: down (arms rise when squatting)
+      (-0.1 - squat01 * 0.15) * stanceMul, // X: forward (rider-facing direction)
+      side * (0.15 + squat01 * 0.2),        // Y: outward (more when squatting)
+      -0.85 + squat01 * 0.5                 // Z: down (arms rise when squatting)
     );
-    
-    // Edge counterbalance: arms shift opposite to lean direction
+
+    // Edge counterbalance: arms shift opposite to lean direction (stance-independent physics)
     elbowDir.x += edge01 * 0.2;
-    // Asymmetric height adjustment: downhill arm drops, uphill arm rises
-    elbowDir.z += (isLeft ? -1 : 1) * edge01 * 0.15;
+    // Asymmetric height adjustment: back arm drops, front arm rises
+    elbowDir.z += (isLeft ? -1 : 1) * stanceMul * edge01 * 0.15;
     
     // Rotation-based arm flare: arms extend outward with rotation magnitude
     const rotMagnitude = Math.abs(rotRad);
@@ -591,14 +594,14 @@ function getBodyPoints() {
     
     // Hand direction from elbow (continues roughly same direction, slightly more down/forward)
     let handDir = new THREE.Vector3(
-      -0.2 - squat01 * 0.2,               // forward
-      side * (0.1 + squat01 * 0.15),      // outward
-      -0.8 + squat01 * 0.3                // down
+      (-0.2 - squat01 * 0.2) * stanceMul, // forward (rider-facing direction)
+      side * (0.1 + squat01 * 0.15),       // outward
+      -0.8 + squat01 * 0.3                 // down
     );
-    
-    // Same edge and rotation adjustments
+
+    // Same edge and rotation adjustments (counterbalance is stance-independent)
     handDir.x += edge01 * 0.15;
-    handDir.z += (isLeft ? -1 : 1) * edge01 * 0.1;
+    handDir.z += (isLeft ? -1 : 1) * stanceMul * edge01 * 0.1;
     
     // Rotation-based arm flare for hands
     handDir.y += side * rotMagnitude * 0.12;
@@ -758,8 +761,12 @@ function updateModel() {
   updateFlowArrow(state.leanDeg);
 
   // Update telemetry cards
-  const carveDir = state.leanDeg > 0 ? "TOESIDE" : state.leanDeg < 0 ? "HEELSIDE" : "STRAIGHT";
-  const carveLabel = carveDir === 'TOESIDE' ? 'TURNING LEFT' : carveDir === 'HEELSIDE' ? 'TURNING RIGHT' : 'STRAIGHT';
+  // Edge label depends on stance: positive lean = toeside for goofy, heelside for regular
+  const posEdge = state.isGoofy ? "TOESIDE" : "HEELSIDE";
+  const negEdge = state.isGoofy ? "HEELSIDE" : "TOESIDE";
+  const carveDir = state.leanDeg > 0 ? posEdge : state.leanDeg < 0 ? negEdge : "STRAIGHT";
+  // Turn direction is physical (stance-independent): positive lean = turn left
+  const carveLabel = state.leanDeg > 0 ? 'TURNING LEFT' : state.leanDeg < 0 ? 'TURNING RIGHT' : 'STRAIGHT';
   const carveSub = carveDir === 'TOESIDE' ? 'Toe Edge' : carveDir === 'HEELSIDE' ? 'Heel Edge' : 'Flat Board';
   const tData = {
     carveState: carveLabel,
@@ -928,9 +935,14 @@ function loadSessionIntoPlayback(session, sessionId) {
   // Backup current dims for restoration later
   playback.dimsBackup = { ...dims };
 
-  // Apply session dims
+  // Apply session config
   if (session.config && session.config.dims) {
     Object.assign(dims, session.config.dims);
+  }
+  if (session.config && session.config.isGoofy != null) {
+    state.isGoofy = session.config.isGoofy;
+    const stanceBtn = document.getElementById("stanceBtn");
+    if (stanceBtn) stanceBtn.textContent = state.isGoofy ? "Stance: Goofy" : "Stance: Regular";
   }
 
   playback.data = session.frames;
@@ -1189,6 +1201,19 @@ function bindUI() {
     }
   });
 
+  const stanceBtn = document.getElementById("stanceBtn");
+  if (stanceBtn) {
+    stanceBtn.textContent = state.isGoofy ? "Stance: Goofy" : "Stance: Regular";
+    stanceBtn.addEventListener("click", () => {
+      state.isGoofy = !state.isGoofy;
+      stanceBtn.textContent = state.isGoofy ? "Stance: Goofy" : "Stance: Regular";
+      if (liveWS.ws && liveWS.ws.readyState === WebSocket.OPEN) {
+        liveWS.ws.send(JSON.stringify({ action: "set_stance", isGoofy: state.isGoofy }));
+      }
+      updateModel();
+    });
+  }
+
   const liveToggle = document.getElementById("liveToggle");
   if (liveToggle) {
     liveToggle.addEventListener("click", () => {
@@ -1275,6 +1300,11 @@ function handleConfigMessage(msg) {
   if (msg.ranges) {
     if (msg.ranges.maxLeanDeg != null) dims.maxLeanDeg = msg.ranges.maxLeanDeg;
   }
+  if (msg.isGoofy != null) {
+    state.isGoofy = msg.isGoofy;
+    const stanceBtn = document.getElementById("stanceBtn");
+    if (stanceBtn) stanceBtn.textContent = state.isGoofy ? "Stance: Goofy" : "Stance: Regular";
+  }
   updateModel();
 }
 
@@ -1299,6 +1329,11 @@ function handleStateMessage(msg) {
   state.roll = msg.roll;
   if (msg.slopeDeg != null) state.slopeDeg = msg.slopeDeg;
   if (msg.boardAccelFwd != null) state.boardAccelFwd = msg.boardAccelFwd;
+  if (msg.isGoofy != null) {
+    state.isGoofy = msg.isGoofy;
+    const stanceBtn = document.getElementById("stanceBtn");
+    if (stanceBtn) stanceBtn.textContent = state.isGoofy ? "Stance: Goofy" : "Stance: Regular";
+  }
   if (msg.boardConnected !== undefined) {
     updateIMUStatus(msg.boardConnected, msg.bodyConnected);
   }
@@ -1367,7 +1402,7 @@ function stopRecording() {
       durationMs: lastFrame.t,
       frameCount: recording.frames.length,
     },
-    config: { dims: recording.dimsSnapshot },
+    config: { dims: recording.dimsSnapshot, isGoofy: state.isGoofy },
     frames: recording.frames,
   };
 }

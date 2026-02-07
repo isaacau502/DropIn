@@ -81,7 +81,7 @@ class BridgeState:
         self.board_last_ts_ns = None
         self.board_start_ns = None
         self.board_vib_raw = deque(maxlen=50)
-        self.is_goofy = False
+        self.is_goofy = True
 
         # Board calibration (Rodrigues rotation)
         self.board_ref_gravity = None
@@ -171,8 +171,6 @@ class BridgeState:
         g_cal = self.board_cal_rotation @ np.array([gx, gy, gz])
         lean_deg = np.degrees(np.arctan2(g_cal[1], -g_cal[2]))
         slope_deg = -np.degrees(np.arctan2(g_cal[0], -g_cal[2]))
-        if self.is_goofy:
-            slope_deg = -slope_deg
         return lean_deg, slope_deg
 
     # ── Board data processing (verbatim from live_dual_visualizer.py) ─────
@@ -391,6 +389,11 @@ def load_calibration_profile(state: BridgeState, path: str):
             state.max_tilt_deg = dr["maxSquatTiltDeg"]
             print(f"  Max squat tilt: {state.max_tilt_deg:.1f} deg")
 
+        # Stance preference
+        if "isGoofy" in profile:
+            state.is_goofy = profile["isGoofy"]
+            print(f"  Stance: {'Goofy' if state.is_goofy else 'Regular'}")
+
         print("Calibration profile loaded successfully.")
 
     except Exception as e:
@@ -425,6 +428,7 @@ def build_config_message(state: BridgeState) -> dict:
             "maxSquatTiltDeg": dr.get("maxSquatTiltDeg"),
             "maxTorsoRotDeg": dr.get("maxTorsoRotDeg"),
         }
+    msg["isGoofy"] = state.is_goofy
     msg["calStatus"] = {
         "boardCalibrated": state.board_calibrated,
         "bodyCalibrated": state.body_calibrated,
@@ -591,6 +595,9 @@ def run_ws_broadcast(state: BridgeState):
                             await handle_load_session(websocket, cmd)
                         elif action == "delete_session":
                             await handle_delete_session(websocket, cmd)
+                        elif action == "set_stance":
+                            state.is_goofy = cmd.get("isGoofy", False)
+                            print(f"Stance: {'Goofy' if state.is_goofy else 'Regular'}")
                     except Exception:
                         pass
             except websockets.exceptions.ConnectionClosed:
@@ -614,6 +621,7 @@ def run_ws_broadcast(state: BridgeState):
                             "boardAccelFwd": state.current_state["boardAccelFwd"],
                             "boardConnected": state.board_connected,
                             "bodyConnected": state.body_connected,
+                            "isGoofy": state.is_goofy,
                         }
                     payload = json.dumps(msg)
                     # Broadcast to all connected browsers
@@ -655,7 +663,8 @@ if __name__ == "__main__":
         print("\nNo calibration_profile.json found. Using defaults.")
         print("Press 'c' to start manual calibration once IMUs are connected.")
 
-    print("\nCommands: c=calibrate  q=quit")
+    print(f"\nStance: {'Goofy' if state.is_goofy else 'Regular'}")
+    print("\nCommands: c=calibrate  g=toggle goofy/regular  q=quit")
     print("-" * 60)
 
     try:
