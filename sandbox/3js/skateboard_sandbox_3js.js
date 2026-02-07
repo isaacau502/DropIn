@@ -74,20 +74,7 @@ const recording = {
   timedTimeout: null,
 };
 
-const trail = {
-  enabled: true,
-  points: [],           // [{x, y}] computed each frame for mesh rendering
-  segments: [],         // [{curv, step}] per-frame curvature + distance history
-  maxPoints: 600,       // ~20s at 30Hz
-  baseSpeed: 0.018,     // units/frame forward speed
-  ribbonWidth: 0.06,    // half-width of ribbon strip
-  mesh: null,
-  geometry: null,
-  posAttr: null,
-  colorAttr: null,
-  _scrubbing: false,
-  _lastTime: 0,
-};
+
 
 const dims = {
   boardWidth: 0.2,
@@ -426,140 +413,6 @@ const arrowheadGeo = new THREE.ConeGeometry(0.04, 0.12, 8);
 const arrowheadMat = new THREE.MeshStandardMaterial({ color: colors.flow });
 const flowArrowhead = new THREE.Mesh(arrowheadGeo, arrowheadMat);
 scene.add(flowArrowhead);
-
-// ── Carve Trail ───────────────────────────────────────────────────────────
-
-function createTrailMesh() {
-  const maxVerts = trail.maxPoints * 2;
-  const maxTris = (trail.maxPoints - 1) * 2;
-
-  trail.geometry = new THREE.BufferGeometry();
-
-  const positions = new Float32Array(maxVerts * 3);
-  trail.posAttr = new THREE.BufferAttribute(positions, 3);
-  trail.posAttr.setUsage(THREE.DynamicDrawUsage);
-  trail.geometry.setAttribute("position", trail.posAttr);
-
-  const vertColors = new Float32Array(maxVerts * 3);
-  trail.colorAttr = new THREE.BufferAttribute(vertColors, 3);
-  trail.colorAttr.setUsage(THREE.DynamicDrawUsage);
-  trail.geometry.setAttribute("color", trail.colorAttr);
-
-  const indices = new Uint16Array(maxTris * 3);
-  trail.geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-
-  const material = new THREE.MeshBasicMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.85,
-    depthWrite: false,
-  });
-
-  trail.mesh = new THREE.Mesh(trail.geometry, material);
-  trail.mesh.frustumCulled = false;
-  scene.add(trail.mesh);
-}
-
-function updateTrail() {
-  if (!trail.enabled || trail._scrubbing) return;
-
-  const now = performance.now();
-  const dt = trail._lastTime ? Math.min((now - trail._lastTime) / 1000, 0.1) : 1 / 30;
-  trail._lastTime = now;
-  const scale = dt * 30;
-
-  // Curvature matched to flow arrow: buildFlowPath uses curvature = clamp(lean/maxLean) * 0.8
-  const curvature = Math.max(-1, Math.min(1, state.leanDeg / dims.maxLeanDeg)) * 0.8;
-  const curv = Math.abs(curvature) < 0.04 ? 0 : curvature; // dead zone for noise
-  const pathLen = 1.2;
-
-  let speed = trail.baseSpeed * scale;
-  if (state.boardAccelFwd !== 0) {
-    speed *= 1.0 + Math.max(-0.5, Math.min(0.5, state.boardAccelFwd / 6.0));
-  }
-
-  // Store this frame's curvature and step distance
-  trail.segments.push({ curv: curv, step: speed });
-  if (trail.segments.length > trail.maxPoints) trail.segments.shift();
-
-  // Reconstruct trail path by integrating curvatures backward from the board
-  const n = trail.segments.length;
-  let heading = 0;
-  let px = 0, py = 0;
-
-  // Board position is the newest point
-  if (!trail.points[n]) trail.points[n] = { x: 0, y: 0 };
-  trail.points[n].x = 0;
-  trail.points[n].y = 0;
-
-  // Walk backward from board (newest segment to oldest)
-  for (let i = n - 1; i >= 0; i--) {
-    const seg = trail.segments[i];
-    // Heading at past position: undo the turn that happened at this segment
-    heading += (2 * seg.curv / pathLen) * seg.step;
-    px -= Math.sin(heading) * seg.step;
-    py -= Math.cos(heading) * seg.step;
-    if (!trail.points[i]) trail.points[i] = { x: 0, y: 0 };
-    trail.points[i].x = px;
-    trail.points[i].y = py;
-  }
-  trail.points.length = n + 1;
-
-  updateTrailMesh();
-}
-
-function updateTrailMesh() {
-  const pts = trail.points;
-  const n = pts.length;
-  if (n < 2) { trail.geometry.setDrawRange(0, 0); return; }
-
-  const posArr = trail.posAttr.array;
-  const colArr = trail.colorAttr.array;
-  const idxArr = trail.geometry.index.array;
-  const Z = 0.005;
-  const hw = trail.ribbonWidth;
-
-  for (let i = 0; i < n; i++) {
-    const p = pts[i];
-    let tx, ty;
-    if (i === 0) { tx = pts[1].x - pts[0].x; ty = pts[1].y - pts[0].y; }
-    else if (i === n - 1) { tx = pts[n - 1].x - pts[n - 2].x; ty = pts[n - 1].y - pts[n - 2].y; }
-    else { tx = pts[i + 1].x - pts[i - 1].x; ty = pts[i + 1].y - pts[i - 1].y; }
-
-    const tLen = Math.sqrt(tx * tx + ty * ty);
-    if (tLen > 1e-6) { tx /= tLen; ty /= tLen; }
-    else { tx = 0; ty = 1; }
-
-    const nx = ty, ny = -tx;
-    const vi = i * 2;
-    posArr[vi * 3] = p.x - nx * hw;     posArr[vi * 3 + 1] = p.y - ny * hw;     posArr[vi * 3 + 2] = Z;
-    posArr[(vi+1)*3] = p.x + nx * hw;   posArr[(vi+1)*3+1] = p.y + ny * hw;     posArr[(vi+1)*3+2] = Z;
-
-    const t = i / (n - 1);
-    const fade = t * t;
-    const r = 0.08 * (1 - fade);
-    const g = 0.15 + 0.85 * fade;
-    const b = 0.05 + 0.483 * fade;
-
-    colArr[vi * 3] = r;     colArr[vi * 3 + 1] = g;     colArr[vi * 3 + 2] = b;
-    colArr[(vi+1)*3] = r;   colArr[(vi+1)*3+1] = g;     colArr[(vi+1)*3+2] = b;
-  }
-
-  let idx = 0;
-  for (let i = 0; i < n - 1; i++) {
-    const a = i * 2, b = i * 2 + 1, c = (i+1) * 2, d = (i+1) * 2 + 1;
-    idxArr[idx++] = a; idxArr[idx++] = c; idxArr[idx++] = b;
-    idxArr[idx++] = b; idxArr[idx++] = c; idxArr[idx++] = d;
-  }
-
-  trail.geometry.setDrawRange(0, idx);
-  trail.posAttr.needsUpdate = true;
-  trail.colorAttr.needsUpdate = true;
-  trail.geometry.index.needsUpdate = true;
-}
-
-createTrailMesh();
 
 function buildFlowPath(leanDeg) {
   // leanDeg: raw board lean in degrees
@@ -1002,7 +855,7 @@ function tickPlayback() {
     if (playback.currentTime >= playback.duration) {
       playback.currentTime = 0;
       playback.index = 0;
-      trail.points = []; trail.segments = []; trail._lastTime = 0;
+  
     }
 
     const sample = sampleAtMs(playback.currentTime);
@@ -1071,7 +924,7 @@ function sampleAtMs(timeMs) {
 }
 
 function loadSessionIntoPlayback(session, sessionId) {
-  trail.points = []; trail.segments = []; trail._lastTime = 0;
+
   // Backup current dims for restoration later
   playback.dimsBackup = { ...dims };
 
@@ -1104,7 +957,7 @@ function loadSessionIntoPlayback(session, sessionId) {
 }
 
 function exitSessionPlayback() {
-  trail.points = []; trail.segments = []; trail._lastTime = 0;
+
   playback.sessionMode = false;
   playback.activeSessionId = null;
   playback.hasData = false;
@@ -1279,7 +1132,7 @@ function bindUI() {
     state.roll = 0;
     state.slopeDeg = 0;
     state.isToeside = false;
-    trail.points = []; trail.segments = []; trail._lastTime = 0;
+
     syncUI();
     updateModel();
   });
@@ -1387,11 +1240,6 @@ window.addEventListener("keydown", (e) => {
         }, 6000);
       }
     }
-  }
-  if (e.key === "t" || e.key === "T") {
-    trail.enabled = !trail.enabled;
-    if (trail.mesh) trail.mesh.visible = trail.enabled;
-    if (!trail.enabled) { trail.points = []; trail.segments = []; trail._lastTime = 0; }
   }
 });
 
@@ -1976,7 +1824,7 @@ if (pbScrub) {
     if (sample) {
       applyStateFromSample(sample);
       syncUI();
-      trail.points = []; trail.segments = []; trail._lastTime = 0;
+  
       updateModel();
     }
     updatePlaybackUI();
@@ -2021,7 +1869,6 @@ loadCsvPlayback("/inputs/board_viz.csv").then((ok) => {
 function animate() {
   requestAnimationFrame(animate);
   tickPlayback();
-  updateTrail();
   controls.update();
   renderer.render(scene, camera);
 }
